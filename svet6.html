@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Svět - Noc, Měsíc a Kameny</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #000;
+        }
+        
+        #score-box {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #ffd700;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 24px;
+            font-weight: bold;
+            border: 2px solid #ffd700;
+            user-select: none;
+            z-index: 10;
+        }
+        
+        #message-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            z-index: 100;
+        }
+        #message-title { font-size: 4rem; margin-bottom: 20px; text-transform: uppercase; text-align: center; }
+        #message-text { font-size: 1.5rem; margin-bottom: 30px; text-align: center;}
+        button {
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            background: #d32f2f;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        button:hover { background: #b71c1c; }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Generuji noční svět...</div>
+    
+    <div id="score-box">Mince: <span id="score">0</span> / 20</div>
+    
+    <div id="message-overlay">
+        <div id="message-title">Titulek</div>
+        <div id="message-text">Text zprávy</div>
+        <button onclick="location.reload()">Hrát znovu</button>
+    </div>
+
+    <!-- CDN verze Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- Fallback pro offline použití -->
+    <script>
+        if (typeof THREE === 'undefined') {
+            const script = document.createElement('script');
+            script.src = 'three.min.js';
+            document.head.appendChild(script);
+        }
+    </script>
+    
+    <!-- Shadery pro oblohu -->
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec3 vWorldPosition;
+        void main() {
+            vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+            vWorldPosition = worldPosition.xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform vec3 topColor;
+        uniform vec3 bottomColor;
+        uniform float offset;
+        uniform float exponent;
+        varying vec3 vWorldPosition;
+        void main() {
+            float h = normalize( vWorldPosition + offset ).y;
+            gl_FragColor = vec4( mix( bottomColor, topColor, max( pow( max( h , 0.0), exponent ), 0.0 ) ), 1.0 );
+        }
+    </script>
+    
+    <script>
+        window.onload = function() {
+            const checkThree = setInterval(() => {
+                if (typeof THREE !== 'undefined') {
+                    clearInterval(checkThree);
+                    initGame();
+                }
+            }, 50);
+        };
+
+        function initGame() {
+            let score = 0;
+            const WIN_SCORE = 20;
+            let isGameOver = false;
+
+            const CHUNK_SIZE = 200;
+            const CHUNK_RES = 64; 
+            const LOAD_DISTANCE = 2;
+            const WATER_LEVEL = -4.0;
+            
+            // --- NASTAVENÍ NOCNÍ OBLOHY ---
+            const SKY_TOP_COLOR = 0x000022;    // Tmavě modrá/černá nahoře
+            const SKY_BOTTOM_COLOR = 0x001133; // Tmavá u horizontu
+            const FOG_COLOR = 0x050510;        // Velmi tmavá mlha
+
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(FOG_COLOR);
+            scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0025);
+
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // --- VYLEPŠENÉ NEBE (Shader Skybox - NOC) ---
+            const uniforms = {
+                "topColor": { value: new THREE.Color(SKY_TOP_COLOR) },
+                "bottomColor": { value: new THREE.Color(SKY_BOTTOM_COLOR) },
+                "offset": { value: 33 },
+                "exponent": { value: 0.6 }
+            };
+
+            const skyGeo = new THREE.SphereGeometry( 1000, 32, 15 );
+            const skyMat = new THREE.ShaderMaterial( {
+                uniforms: uniforms,
+                vertexShader: document.getElementById( 'vertexShader' ).textContent,
+                fragmentShader: document.getElementById( 'fragmentShader' ).textContent,
+                side: THREE.BackSide
+            } );
+            const sky = new THREE.Mesh( skyGeo, skyMat );
+            scene.add( sky );
+
+            // Světla pro noc
+            const ambientLight = new THREE.AmbientLight(0x222244, 0.3); // Slabé namodralé ambientní světlo
+            scene.add(ambientLight);
+
+            // Měsíční světlo
+            const moonLight = new THREE.DirectionalLight(0xaaccff, 0.6); // Chladné světlo
+            // Pozici nastavíme v animate loopu
+            moonLight.castShadow = true;
+            moonLight.shadow.mapSize.width = 2048;
+            moonLight.shadow.mapSize.height = 2048;
+            moonLight.shadow.bias = -0.0001;
+            scene.add(moonLight);
+            scene.add(moonLight.target); // Přidáme target do scény
+
+            // Vizuální Měsíc
+            const moonSphere = new THREE.Mesh(
+                new THREE.SphereGeometry(15, 16, 16),
+                new THREE.MeshBasicMaterial({ color: 0xffffcc }) // Světle žlutý měsíc
+            );
+            scene.add(moonSphere);
+
+            // --- ČÁSTICE KOUŘE ---
+            const particles = [];
+            const smokeMaterial = new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.5 });
+            const smokeGeo = new THREE.DodecahedronGeometry(0.6);
+
+            function createSmoke(x, y, z) {
+                const s = new THREE.Mesh(smokeGeo, smokeMaterial);
+                const angle = Math.random() * Math.PI * 2;
+                const dist = Math.random() * 3;
+                s.position.set(x + Math.cos(angle)*dist, y, z + Math.sin(angle)*dist);
+                
+                s.rotation.set(Math.random()*6, Math.random()*6, Math.random()*6);
+                s.userData = { 
+                    vy: 0.2 + Math.random() * 0.25, 
+                    vx: (Math.random()-0.5) * 0.15,
+                    vz: (Math.random()-0.5) * 0.15,
+                    life: 1.0,
+                    scaleSpeed: 0.08
+                };
+                scene.add(s);
+                particles.push(s);
+            }
+
+            // --- PŘÍŠERY ---
+            const monsterGeo = new THREE.SphereGeometry(1.5, 16, 16);
+            const monsterMat = new THREE.MeshStandardMaterial({ color: 0x880000, roughness: 0.7, metalness: 0.3 }); 
+            const eyeGeo = new THREE.SphereGeometry(0.3, 8, 8);
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); 
+            const monsters = [];
+
+            function createMonster(x, z) {
+                const group = new THREE.Group();
+                const body = new THREE.Mesh(monsterGeo, monsterMat);
+                body.castShadow = true;
+                group.add(body);
+
+                const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+                leftEye.position.set(-0.5, 0.4, 1.3);
+                group.add(leftEye);
+                
+                const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+                rightEye.position.set(0.5, 0.4, 1.3);
+                group.add(rightEye);
+
+                const y = getTerrainHeight(x, z);
+                group.position.set(x, y + 1.5, z);
+                scene.add(group);
+                
+                return {
+                    mesh: group,
+                    speed: 0.25 + Math.random() * 0.15,
+                    aggroRange: 75 
+                };
+            }
+
+            // --- LOGIKA TERÉNU (Sopky + HORY) ---
+            function getVolcanoHeight(x, z) {
+                const gridSize = 400; 
+                const gridX = Math.round(x / gridSize) * gridSize;
+                const gridZ = Math.round(z / gridSize) * gridSize;
+                
+                if ((Math.abs(gridX) + Math.abs(gridZ)) % (gridSize * 2) !== 0) return { h: 0, isVolcano: false };
+                if (gridX === 0 && gridZ === 0) return { h: 0, isVolcano: false };
+
+                const dx = x - gridX;
+                const dz = z - gridZ;
+                const dist = Math.sqrt(dx*dx + dz*dz);
+                
+                const radius = 70; 
+                const peakHeight = 55; 
+                const craterRadius = 8;
+
+                if (dist < radius) {
+                    const jaggedness = Math.sin(dx * 0.2) * Math.cos(dz * 0.2) * 1.5;
+                    let h = peakHeight * Math.pow(1 - (dist / radius), 2) + jaggedness;
+                    if (dist < craterRadius) h = peakHeight - (craterRadius - dist) * 2;
+                    return { h: Math.max(0, h), isVolcano: true, dist: dist, center: {x: gridX, z: gridZ} };
+                }
+                return { h: 0, isVolcano: false };
+            }
+
+            function getBaseNoise(x, z) {
+                return Math.sin(x * 0.015) * Math.cos(z * 0.015) * 10 +
+                       Math.sin(x * 0.005 + z * 0.005) * 15 + 
+                       Math.sin(x * 0.05) * Math.cos(z * 0.05) * 2;
+            }
+
+            function getMountainHeight(x, z) {
+                const noise = Math.sin(x * 0.01) * Math.cos(z * 0.01) * 20 + 
+                              Math.sin(x * 0.003) * Math.cos(z * 0.004) * 40;
+                
+                if (noise > 15) {
+                    return Math.pow(noise - 15, 1.4);
+                }
+                return 0;
+            }
+
+            function getRawHeight(x, z) {
+                let base = getBaseNoise(x, z);
+                const mountains = getMountainHeight(x, z);
+                base += mountains;
+
+                const vData = getVolcanoHeight(x, z);
+                if (vData.isVolcano) {
+                    return Math.max(base, -5) + vData.h; 
+                }
+                return base;
+            }
+
+            function getTerrainHeight(x, z) {
+                const raw = getRawHeight(x, z);
+                return Math.max(raw, WATER_LEVEL);
+            }
+
+            const terrainMaterial = new THREE.MeshStandardMaterial({ 
+                vertexColors: true, 
+                roughness: 0.8, 
+                flatShading: true,
+                metalness: 0.1
+            });
+
+            // --- VEGETACE A KAMENY ---
+            const treeGeo = new THREE.ConeGeometry(2.5, 7, 6);
+            const trunkGeo = new THREE.CylinderGeometry(0.6, 0.8, 2.5, 5);
+            const treeMat = new THREE.MeshStandardMaterial({ color: 0x1a3a17, flatShading: true }); // Tmavší zelená pro noc
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3c31, flatShading: true });
+
+            const deadTrunkGeo = new THREE.CylinderGeometry(0.4, 0.6, 6, 4);
+            deadTrunkGeo.rotateZ(0.1);
+            const deadBranchGeo = new THREE.CylinderGeometry(0.2, 0.3, 3, 3);
+            const deadMat = new THREE.MeshStandardMaterial({ color: 0x333333, flatShading: true });
+
+            const palmTrunkGeo = new THREE.CylinderGeometry(0.4, 0.7, 7, 5); 
+            const palmLeafGeo = new THREE.ConeGeometry(3, 1, 4);
+            const palmMat = new THREE.MeshStandardMaterial({ color: 0x8DA399, flatShading: true });
+            const palmLeafMat = new THREE.MeshStandardMaterial({ color: 0x4D7E25, flatShading: true });
+
+            const bushGeo = new THREE.DodecahedronGeometry(1.2);
+            const bushMat = new THREE.MeshStandardMaterial({ color: 0x265827, flatShading: true });
+
+            // --- DEFINICE KAMENŮ ---
+            const stoneGeo = new THREE.DodecahedronGeometry(1.0, 0); // Low poly kámen
+            const stoneMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.9, flatShading: true });
+
+            const lavaMat = new THREE.MeshBasicMaterial({ color: 0xff3300 }); 
+            const coinGeo = new THREE.CylinderGeometry(1.5, 1.5, 0.2, 16);
+            const coinMat = new THREE.MeshStandardMaterial({ 
+                color: 0xffd700, 
+                metalness: 1.0, 
+                roughness: 0.2,
+                emissive: 0x664400 
+            });
+
+            const terrainChunks = new Map();
+            const obstacles = []; // Přejmenováno z treeObstacles, protože obsahuje i kameny
+            const environmentGroup = new THREE.Group();
+            scene.add(environmentGroup);
+            
+            const lavaGroup = new THREE.Group();
+            scene.add(lavaGroup);
+            
+            const volcanoVents = new Set();
+            const coins = [];
+            const coinsGroup = new THREE.Group();
+            scene.add(coinsGroup);
+
+            // Funkce pro vytvoření kamene (s kolizí)
+            function createStone(x, y, z) {
+                const s = new THREE.Mesh(stoneGeo, stoneMat);
+                // Náhodná velikost a rotace
+                const scale = 0.8 + Math.random() * 1.5;
+                s.scale.set(scale, scale, scale);
+                s.rotation.set(Math.random()*3, Math.random()*3, Math.random()*3);
+                
+                // Mírně zanořit do země
+                s.position.set(x, y + (scale * 0.4), z);
+                s.castShadow = true;
+                s.receiveShadow = true;
+                
+                environmentGroup.add(s);
+                // Přidání do kolizí (radius přizpůsoben velikosti)
+                obstacles.push({x, z, radius: scale * 0.9});
+            }
+
+            function createDeadTree(x, y, z) {
+                const g = new THREE.Group();
+                const trunk = new THREE.Mesh(deadTrunkGeo, deadMat);
+                trunk.position.y = 3;
+                trunk.rotation.z = (Math.random()-0.5)*0.3;
+                trunk.castShadow = true;
+                g.add(trunk);
+                
+                const branch = new THREE.Mesh(deadBranchGeo, deadMat);
+                branch.position.set(0, 4, 0);
+                branch.rotation.z = 1.5;
+                branch.castShadow = true;
+                g.add(branch);
+
+                g.position.set(x, y, z);
+                environmentGroup.add(g);
+                obstacles.push({x, z, radius: 1});
+            }
+
+            function createPalm(x, y, z) {
+                const g = new THREE.Group();
+                const t = new THREE.Mesh(palmTrunkGeo, palmMat);
+                t.position.y = 3.5;
+                t.castShadow = true;
+                g.add(t);
+
+                for(let i=0; i<5; i++) {
+                    const l = new THREE.Mesh(palmLeafGeo, palmLeafMat);
+                    l.position.set(0, 7, 0);
+                    l.rotation.x = 0.5;
+                    l.rotation.y = (i / 5) * Math.PI * 2;
+                    l.scale.set(1, 4, 1); 
+                    l.castShadow = true;
+                    g.add(l);
+                }
+                
+                const scale = 0.8 + Math.random() * 0.4;
+                g.scale.set(scale, scale, scale);
+                g.position.set(x, y, z);
+                environmentGroup.add(g);
+                obstacles.push({x, z, radius: 1.5 * scale});
+            }
+
+            function loadChunk(cX, cZ) {
+                const key = `${cX}_${cZ}`;
+                if (terrainChunks.has(key)) return;
+
+                const offsetX = cX * CHUNK_SIZE;
+                const offsetZ = cZ * CHUNK_SIZE;
+
+                const geometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_RES, CHUNK_RES);
+                geometry.rotateX(-Math.PI / 2);
+                const colors = [];
+                const count = geometry.attributes.position.count;
+                
+                const processedVents = new Set();
+
+                for (let i = 0; i < count; i++) {
+                    const localX = geometry.attributes.position.getX(i);
+                    const localZ = geometry.attributes.position.getZ(i);
+                    const globalX = localX + offsetX;
+                    const globalZ = localZ + offsetZ;
+                    
+                    const vData = getVolcanoHeight(globalX, globalZ);
+                    const rawH = getRawHeight(globalX, globalZ);
+                    
+                    let finalY = Math.max(rawH, WATER_LEVEL);
+                    geometry.attributes.position.setY(i, finalY);
+
+                    const color = new THREE.Color();
+                    
+                    if (vData.isVolcano) {
+                        if (vData.dist < 8) {
+                            color.setHex(0x110505); 
+                            const ventKey = `${vData.center.x}_${vData.center.z}`;
+                            if (!processedVents.has(ventKey)) {
+                                processedVents.add(ventKey);
+                                if (![...volcanoVents].some(v => v.x === vData.center.x && v.z === vData.center.z)) {
+                                    volcanoVents.add({x: vData.center.x, z: vData.center.z, y: finalY});
+                                    const lavaMesh = new THREE.Mesh(new THREE.CircleGeometry(6, 16), lavaMat);
+                                    lavaMesh.rotation.x = -Math.PI / 2;
+                                    lavaMesh.position.set(vData.center.x, finalY + 0.5, vData.center.z);
+                                    lavaGroup.add(lavaMesh);
+                                    const vLight = new THREE.PointLight(0xff4400, 3, 60);
+                                    vLight.position.set(vData.center.x, finalY + 15, vData.center.z);
+                                    lavaGroup.add(vLight);
+                                }
+                            }
+                        } else if (vData.dist < 25) {
+                            color.setHex(0x221111); 
+                            if (Math.random() < 0.05) color.setHex(0xcc4400); 
+                        } else {
+                            color.setHex(0x3a2a2a); 
+                            if (Math.random() < 0.02) color.setHex(0xcc4400); 
+                        }
+                    } else if (rawH <= WATER_LEVEL + 0.1) {
+                        color.setHex(0x114488); // Tmavší voda pro noc
+                        color.offsetHSL(0, 0, Math.random() * 0.05); 
+                    } else if (rawH < WATER_LEVEL + 2) {
+                        color.setHex(0x887766); // Tmavší písek
+                    } else if (rawH < 15) {
+                        color.setHex(0x2a4c26); // Tmavší tráva
+                        color.offsetHSL(0, 0, (Math.random() - 0.5) * 0.04);
+                    } else if (rawH < 40) {
+                        color.setHex(0x333333); // Skály
+                    } else {
+                        color.setHex(0xaaaaaa); // Sníh v noci (šedý)
+                    }
+                    colors.push(color.r, color.g, color.b);
+                }
+                geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                geometry.computeVertexNormals();
+                const mesh = new THREE.Mesh(geometry, terrainMaterial);
+                mesh.position.set(offsetX, 0, offsetZ);
+                mesh.receiveShadow = true;
+                scene.add(mesh);
+                terrainChunks.set(key, mesh);
+
+                const numItems = Math.floor(Math.random() * 12) + 6; 
+                for (let i = 0; i < numItems; i++) {
+                    const localX = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const localZ = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const gx = localX + offsetX;
+                    const gz = localZ + offsetZ;
+                    
+                    const vData = getVolcanoHeight(gx, gz);
+                    const y = getTerrainHeight(gx, gz);
+
+                    if (vData.isVolcano && vData.dist < 15) continue;
+                    if (y > 45 && !vData.isVolcano) continue; 
+
+                    // Generování kamenů a stromů
+                    const randType = Math.random();
+
+                    if (y <= WATER_LEVEL + 3 && y > WATER_LEVEL && !vData.isVolcano) {
+                        if (randType < 0.4) createPalm(gx, y, gz);
+                        else if (randType < 0.6) createStone(gx, y, gz); // Kameny na pláži
+                    }
+                    else if (vData.isVolcano && vData.dist > 20) {
+                        if (Math.random() < 0.3) createDeadTree(gx, y, gz);
+                        else if (Math.random() < 0.4) createStone(gx, y, gz); // Kameny u sopky
+                    }
+                    else if (y > WATER_LEVEL + 3 && !vData.isVolcano && y < 35) {
+                        if (randType < 0.5) {
+                            // Strom
+                            const g = new THREE.Group();
+                            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                            trunk.position.y = 1.25; g.add(trunk);
+                            const leaves = new THREE.Mesh(treeGeo, treeMat);
+                            leaves.position.y = 4.5; g.add(leaves);
+                            g.scale.setScalar(0.8 + Math.random()*0.5);
+                            g.children.forEach(c => {c.castShadow=true; c.receiveShadow=true;});
+                            g.position.set(gx, y, gz);
+                            environmentGroup.add(g);
+                            obstacles.push({x: gx, z: gz, radius: 2});
+                        } else if (randType < 0.65) {
+                            // Keř (bez kolize, jen dekorace)
+                            const bush = new THREE.Mesh(bushGeo, bushMat);
+                            bush.position.set(gx, y + 0.6, gz);
+                            bush.castShadow = true;
+                            environmentGroup.add(bush);
+                        } else if (randType < 0.8) {
+                            // Kámen (s kolizí)
+                            createStone(gx, y, gz);
+                        }
+                    }
+                }
+
+                if (Math.random() < 0.6) {
+                    const localX = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const localZ = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const gx = localX + offsetX;
+                    const gz = localZ + offsetZ;
+                    const y = getTerrainHeight(gx, gz);
+                    if (y >= WATER_LEVEL) {
+                        const coin = new THREE.Mesh(coinGeo, coinMat);
+                        coin.position.set(gx, y + 1.5, gz);
+                        coin.rotation.x = Math.PI / 2;
+                        coinsGroup.add(coin);
+                        coins.push(coin);
+                    }
+                }
+
+                const numMonsters = Math.floor(Math.random() * 2) + 1; 
+                for(let m = 0; m < numMonsters; m++) {
+                    const localX = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const localZ = (Math.random() - 0.5) * CHUNK_SIZE;
+                    const gx = localX + offsetX;
+                    const gz = localZ + offsetZ;
+                    if (getTerrainHeight(gx, gz) > WATER_LEVEL) {
+                        monsters.push(createMonster(gx, gz));
+                    }
+                }
+            }
+
+            const player = {
+                height: 2.5,
+                radius: 1.0,
+                speed: 0.6,
+                turnSpeed: 0.04,
+                velocity: new THREE.Vector3(),
+                direction: new THREE.Vector3(),
+                canJump: false
+            };
+            
+            camera.position.set(0, 50, 0);
+            camera.position.y = getTerrainHeight(0, 0) + player.height;
+
+            const keys = { forward: false, backward: false, left: false, right: false, space: false, shift: false };
+            document.addEventListener('keydown', (e) => {
+                switch(e.code) {
+                    case 'ArrowUp': case 'KeyW': keys.forward = true; break;
+                    case 'ArrowDown': case 'KeyS': keys.backward = true; break;
+                    case 'ArrowLeft': case 'KeyA': keys.left = true; break;
+                    case 'ArrowRight': case 'KeyD': keys.right = true; break;
+                    case 'Space': keys.space = true; break;
+                    case 'ShiftLeft': case 'ShiftRight': keys.shift = true; break;
+                }
+            });
+            document.addEventListener('keyup', (e) => {
+                switch(e.code) {
+                    case 'ArrowUp': case 'KeyW': keys.forward = false; break;
+                    case 'ArrowDown': case 'KeyS': keys.backward = false; break;
+                    case 'ArrowLeft': case 'KeyA': keys.left = false; break;
+                    case 'ArrowRight': case 'KeyD': keys.right = false; break;
+                    case 'Space': keys.space = false; break;
+                    case 'ShiftLeft': case 'ShiftRight': keys.shift = false; break;
+                }
+            });
+
+            function updateScore() { document.getElementById('score').innerText = score; }
+            function showEndScreen(title, text, color) {
+                isGameOver = true;
+                const overlay = document.getElementById('message-overlay');
+                document.getElementById('message-title').innerText = title;
+                document.getElementById('message-title').style.color = color;
+                document.getElementById('message-text').innerText = text;
+                overlay.style.display = 'flex';
+            }
+            function gameOver(reason) { showEndScreen("Zemřel jsi!", reason, "#d32f2f"); }
+            function gameWin() { showEndScreen("Vítězství!", "Všechny mince sesbírány!", "#4CAF50"); }
+
+            document.getElementById('loading').style.opacity = 0;
+
+            function animate() {
+                if (isGameOver) return;
+                requestAnimationFrame(animate);
+
+                let currentCX = Math.floor(camera.position.x / CHUNK_SIZE);
+                let currentCZ = Math.floor(camera.position.z / CHUNK_SIZE);
+                for (let dx = -LOAD_DISTANCE; dx <= LOAD_DISTANCE; dx++) {
+                    for (let dz = -LOAD_DISTANCE; dz <= LOAD_DISTANCE; dz++) {
+                        loadChunk(currentCX + dx, currentCZ + dz);
+                    }
+                }
+                
+                // --- FIX: NEKONEČNÝ SVĚT ---
+                // Obloha, Měsíc a světlo se hýbou s kamerou, takže k nim nelze "dojít"
+                sky.position.copy(camera.position);
+                
+                const moonOffset = new THREE.Vector3(100, 300, -100);
+                moonSphere.position.copy(camera.position).add(moonOffset.clone().normalize().multiplyScalar(900));
+                
+                moonLight.position.copy(camera.position).add(moonOffset);
+                moonLight.target.position.copy(camera.position);
+                moonLight.target.updateMatrixWorld();
+                
+                if (keys.left) camera.rotation.y += player.turnSpeed;
+                if (keys.right) camera.rotation.y -= player.turnSpeed;
+
+                player.direction.set(0, 0, -1).applyQuaternion(camera.quaternion);
+                player.direction.y = 0;
+                player.direction.normalize();
+
+                const currentY = getTerrainHeight(camera.position.x, camera.position.z);
+                
+                const isOnWater = (currentY <= WATER_LEVEL + 0.001);
+                
+                let currentSpeed = isOnWater ? player.speed * 0.5 : (keys.shift ? player.speed * 2.0 : player.speed);
+
+                let moveX = 0; let moveZ = 0;
+                if (keys.forward) { moveX = player.direction.x * currentSpeed; moveZ = player.direction.z * currentSpeed; }
+                else if (keys.backward) { moveX = -player.direction.x * (currentSpeed * 0.5); moveZ = -player.direction.z * (currentSpeed * 0.5); }
+
+                const nextX = camera.position.x + moveX;
+                const nextZ = camera.position.z + moveZ;
+                let collision = false;
+                
+                // Kontrola kolizí (stromy I kameny)
+                for (let obs of obstacles) {
+                    const d = Math.sqrt((nextX - obs.x)**2 + (nextZ - obs.z)**2);
+                    if (d < (player.radius + obs.radius)) { collision = true; break; }
+                }
+
+                volcanoVents.forEach(vent => {
+                    const distToPlayer = Math.sqrt((camera.position.x - vent.x)**2 + (camera.position.z - vent.z)**2);
+                    if (distToPlayer < 350) {
+                        if (Math.random() < 0.2) { 
+                            createSmoke(vent.x, vent.y + 2, vent.z);
+                        }
+                        if (distToPlayer < 7 && Math.abs(camera.position.y - vent.y) < 5) {
+                             gameOver("Uhořel jsi v sopce!");
+                        }
+                    }
+                });
+
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.position.y += p.userData.vy;
+                    p.position.x += p.userData.vx;
+                    p.position.z += p.userData.vz;
+                    
+                    const s = p.scale.x + p.userData.scaleSpeed;
+                    p.scale.set(s, s, s);
+
+                    p.userData.life -= 0.005; 
+                    p.material.opacity = p.userData.life * 0.5;
+                    if (p.userData.life <= 0) {
+                        scene.remove(p);
+                        particles.splice(i, 1);
+                    }
+                }
+
+                if (!collision) { player.velocity.x = moveX; player.velocity.z = moveZ; }
+                else { player.velocity.x = 0; player.velocity.z = 0; }
+
+                player.velocity.y -= 0.025;
+                if (keys.space && player.canJump) {
+                    player.velocity.y = isOnWater ? 0.3 : 0.6; 
+                    player.canJump = false;
+                }
+
+                camera.position.x += player.velocity.x;
+                camera.position.z += player.velocity.z;
+                camera.position.y += player.velocity.y;
+
+                let finalGroundHeight = getTerrainHeight(camera.position.x, camera.position.z);
+                
+                if (camera.position.y < finalGroundHeight + player.height) {
+                    camera.position.y = finalGroundHeight + player.height;
+                    player.velocity.y = 0;
+                    player.canJump = true;
+                }
+
+                for (let i = coins.length - 1; i >= 0; i--) {
+                    coins[i].rotation.y += 0.05;
+                    if (camera.position.distanceTo(coins[i].position) < 3) {
+                        coinsGroup.remove(coins[i]);
+                        coins.splice(i, 1);
+                        score++; updateScore();
+                        if (score >= WIN_SCORE) gameWin();
+                    }
+                }
+
+                monsters.forEach(m => {
+                    const dx = camera.position.x - m.mesh.position.x;
+                    const dz = camera.position.z - m.mesh.position.z;
+                    const dist = Math.sqrt(dx*dx + dz*dz);
+                    
+                    if (dist < m.aggroRange) {
+                        m.mesh.position.x += (dx/dist) * m.speed;
+                        m.mesh.position.z += (dz/dist) * m.speed;
+                        m.mesh.lookAt(camera.position.x, m.mesh.position.y, camera.position.z);
+                    }
+                    m.mesh.position.y = getTerrainHeight(m.mesh.position.x, m.mesh.position.z) + 1.5;
+                    if (dist < 2.5) gameOver("Dostala tě lávová příšera!");
+                });
+
+                renderer.render(scene, camera);
+            }
+            animate();
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+    </script>
+</body>
+</html>
